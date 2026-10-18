@@ -1,0 +1,133 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Network Recovery Simulator</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <aside class="sidebar">
+        <h2>NET<span>REC</span></h2>
+        <p class="sub">NETWORK SIMULATOR</p>
+
+        <nav>
+            <a class="active" href="#dashboard">▦ Dashboard</a>
+            <a href="#network">◎ Network Topology</a>
+            <a href="#algorithms">⌘ Algorithms</a>
+            <a href="#activity">◷ Activity Log</a>
+        </nav>
+
+        <div class="side-bottom">
+            <span class="status-dot"></span> Simulator Ready
+        </div>
+    </aside>
+
+    <main class="main" id="dashboard">
+        <header>
+            <div>
+                <p class="eyebrow">NETWORK MANAGEMENT / OVERVIEW</p>
+                <h1>Network Recovery Simulator</h1>
+                <p class="muted">Monitor connections. Detect failures. Find routes.</p>
+            </div>
+            <span class="live"><span class="status-dot"></span> SYSTEM ONLINE</span>
+        </header>
+
+        <section class="stats">
+            <article class="stat">
+                <p>Total Devices</p>
+                <h2 id="deviceCount">5</h2>
+                <small>Network nodes</small>
+            </article>
+            <article class="stat">
+                <p>Active Connections</p>
+                <h2 id="connectionCount">5</h2>
+                <small>Working links</small>
+            </article>
+            <article class="stat">
+                <p>Failed Connections</p>
+                <h2 id="failedCount">0</h2>
+                <small>Links unavailable</small>
+            </article>
+            <article class="stat">
+                <p>Network Status</p>
+                <h2 class="healthy" id="networkStatus">Healthy</h2>
+                <small>Current status</small>
+            </article>
+        </section>
+
+        <section class="panel" id="network">
+            <div class="panel-head">
+                <div>
+                    <h2>Network Topology</h2>
+                    <p class="muted">Interactive network visualization</p>
+                </div>
+                <button id="resetBtn" class="secondary">Reset Network</button>
+            </div>
+
+            <div class="graph-wrap">
+                <svg id="networkGraph" viewBox="0 0 700 360"
+                     role="img" aria-label="Network topology graph">
+                </svg>
+            </div>
+
+            <div class="legend">
+                <span><i class="key green"></i> Active link</span>
+                <span><i class="key red"></i> Failed link</span>
+                <span><i class="key blue"></i> Device</span>
+                <span><i class="key yellow"></i> Selected route</span>
+            </div>
+        </section>
+
+        <section class="columns">
+            <article class="panel" id="algorithms">
+                <h2>Network Controls</h2>
+                <p class="muted">Manage devices and connections</p>
+
+                <label for="deviceA">Device A</label>
+                <select id="deviceA"></select>
+
+                <label for="deviceB">Device B</label>
+                <select id="deviceB"></select>
+
+                <label for="delay">Connection delay (ms)</label>
+                <input id="delay" type="number" min="1" value="5">
+
+                <button id="addBtn">+ Add Connection</button>
+                <button id="failBtn" class="danger">Fail Connection</button>
+                <button id="restoreBtn" class="success">Restore Connection</button>
+
+                <hr>
+
+                <label for="algorithm">Select Algorithm</label>
+                <select id="algorithm">
+                    <option value="bfs">BFS — Minimum Hops</option>
+                    <option value="dijkstra">Dijkstra — Minimum Delay</option>
+                    <option value="dfs">DFS — Traversal</option>
+                </select>
+
+                <button id="runBtn">▶ Run Algorithm</button>
+                <div id="result" class="result">
+                    Select devices and run an algorithm.
+                </div>
+            </article>
+
+            <article class="panel" id="activity">
+                <h2>Activity Log</h2>
+                <p class="muted">Recent simulator events</p>
+                <ul id="activityLog">
+                    <li>Simulator interface initialized.</li>
+                    <li>Default network loaded.</li>
+                </ul>
+            </article>
+        </section>
+
+        <footer>
+            Network Recovery Simulator <span>Built with C++ DSA + Web UI</span>
+        </footer>
+    </main>
+
+    <script src="script.js"></script>
+</body>
+</html>
