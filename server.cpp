@@ -1,89 +1,190 @@
 
-#include "httplib.h"
-#include <algorithm>
-#include <cstdlib>
 #include <iostream>
-#include <limits>
-#include <queue>
-#include <sstream>
-#include <string>
 #include <vector>
+#include <string>
+#include <sstream>
+#include <queue>
+#include <stack>
+#include <algorithm>
+#include <limits>
+#include <cstdlib>
+#include <cctype>
+#include "httplib.h"
+
 using namespace std;
+using namespace httplib;
+
+const int N = 5;
+const int INF = numeric_limits<int>::max() / 4;
 
 struct Edge {
-    int to, delay;
+    int to;
+    int delay;
     bool active;
 };
 
 struct Device {
-    string id, name;
+    string id;
+    string name;
 };
 
-httplib::Server server;
-
 vector<Device> devices = {
-    {"D1", "Device 1"}, {"D2", "Device 2"},
-    {"D3", "Device 3"}, {"D4", "Device 4"},
+    {"D1", "Device 1"},
+    {"D2", "Device 2"},
+    {"D3", "Device 3"},
+    {"D4", "Device 4"},
     {"D5", "Device 5"}
 };
 
-vector<vector<Edge>> graph;
+vector<vector<Edge>> graph(N);
+
+// ---------- JSON / REQUEST HELPERS ----------
+
+string jsonEscape(const string& value) {
+    string result;
+
+    for (char c : value) {
+        if (c == '"') result += "\\\"";
+        else if (c == '\\') result += "\\\\";
+        else if (c == '\n') result += "\\n";
+        else if (c == '\r') result += "\\r";
+        else if (c == '\t') result += "\\t";
+        else result += c;
+    }
+
+    return result;
+}
 
 string getValue(const string& body, const string& key) {
-    string token = key + "=";
+    // Read JSON string or numeric values.
+    string token = "\"" + key + "\"";
     size_t p = body.find(token);
-    if (p == string::npos) return "";
-    p += token.size();
 
-    size_t e = body.find('&', p);
-    string s = body.substr(p, e == string::npos ? string::npos : e - p);
-    string out;
+    if (p != string::npos) {
+        p = body.find(':', p);
+        if (p == string::npos) return "";
 
-    for (size_t i = 0; i < s.size(); ++i) {
-        if (s[i] == '+') {
-            out += ' ';
-        } else if (s[i] == '%' && i + 2 < s.size()) {
-            auto hex = [](char c) -> int {
-                if (c >= '0' && c <= '9') return c - '0';
-                if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-                if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-                return -1;
-            };
+        ++p;
 
-            int a = hex(s[i + 1]);
-            int b = hex(s[i + 2]);
-
-            if (a >= 0 && b >= 0) {
-                out += char(a * 16 + b);
-                i += 2;
-            } else {
-                out += s[i];
-            }
-        } else {
-            out += s[i];
+        while (p < body.size() &&
+               isspace(static_cast<unsigned char>(body[p]))) {
+            ++p;
         }
-    }
-    return out;
-}
 
-int deviceIndex(const string& id) {
-    for (size_t i = 0; i < devices.size(); ++i)
-        if (devices[i].id == id) return int(i);
-    return -1;
-}
+        if (p >= body.size()) return "";
 
-void addEdge(int a, int b, int delay, bool active = true) {
-    for (auto& e : graph[a]) {
-        if (e.to == b) {
-            e.delay = delay;
-            e.active = active;
+        if (body[p] == '"') {
+            ++p;
+            string result;
 
-            for (auto& r : graph[b]) {
-                if (r.to == a) {
-                    r.delay = delay;
-                    r.active = active;
+            while (p < body.size()) {
+                if (body[p] == '\\' && p + 1 < body.size()) {
+                    result += body[p + 1];
+                    p += 2;
+                } else if (body[p] == '"') {
+                    return result;
+                } else {
+                    result += body[p++];
                 }
             }
+
+            return "";
+        }
+
+        size_t end = body.find_first_of(",}", p);
+        string value = body.substr(
+            p, end == string::npos ? string::npos : end - p
+        );
+
+        size_t first = value.find_first_not_of(" \t\r\n");
+        if (first == string::npos) return "";
+
+        size_t last = value.find_last_not_of(" \t\r\n");
+        return value.substr(first, last - first + 1);
+    }
+
+    // Also support form-encoded values such as source=D1.
+    string formToken = key + "=";
+    p = body.find(formToken);
+
+    if (p == string::npos) return "";
+
+    p += formToken.size();
+
+    size_t end = body.find('&', p);
+    string value = body.substr(
+        p, end == string::npos ? string::npos : end - p
+    );
+
+    string result;
+
+    for (size_t i = 0; i < value.size(); ++i) {
+        if (value[i] == '+') {
+            result += ' ';
+        } else if (value[i] == '%' && i + 2 < value.size()) {
+            try {
+                result += static_cast<char>(
+                    stoi(value.substr(i + 1, 2), nullptr, 16)
+                );
+                i += 2;
+            } catch (...) {
+                result += value[i];
+            }
+        } else {
+            result += value[i];
+        }
+    }
+
+    return result;
+}
+
+int deviceIndex(string id) {
+    // Accept D1, d1, 1, and Device 1.
+    if (!id.empty() && (id[0] == 'D' || id[0] == 'd')) {
+        id.erase(0, 1);
+    }
+
+    if (id.size() >= 7 && id.substr(0, 7) == "Device ") {
+        id = id.substr(7);
+    }
+
+    try {
+        size_t used = 0;
+        int number = stoi(id, &used);
+
+        if (used != id.size()) return -1;
+        if (number < 1 || number > N) return -1;
+
+        return number - 1;
+    } catch (...) {
+        return -1;
+    }
+}
+
+string deviceId(int index) {
+    if (index < 0 || index >= N) return "";
+    return devices[index].id;
+}
+
+// ---------- NETWORK MANAGEMENT ----------
+
+void addEdge(int a, int b, int delay, bool active = true) {
+    if (a < 0 || a >= N || b < 0 || b >= N || a == b) {
+        return;
+    }
+
+    for (auto& edge : graph[a]) {
+        if (edge.to == b) {
+            edge.delay = delay;
+            edge.active = active;
+
+            for (auto& reverse : graph[b]) {
+                if (reverse.to == a) {
+                    reverse.delay = delay;
+                    reverse.active = active;
+                }
+            }
+
             return;
         }
     }
@@ -93,303 +194,317 @@ void addEdge(int a, int b, int delay, bool active = true) {
 }
 
 bool setEdgeState(int a, int b, bool active) {
-    if (a < 0 || b < 0 || a == b) return false;
+    if (a < 0 || a >= N || b < 0 || b >= N || a == b) {
+        return false;
+    }
 
     bool found = false;
 
-    for (auto& e : graph[a])
-        if (e.to == b) {
-            e.active = active;
+    for (auto& edge : graph[a]) {
+        if (edge.to == b) {
+            edge.active = active;
             found = true;
         }
+    }
 
-    for (auto& e : graph[b])
-        if (e.to == a) {
-            e.active = active;
+    for (auto& edge : graph[b]) {
+        if (edge.to == a) {
+            edge.active = active;
             found = true;
         }
+    }
 
     return found;
 }
 
 void initializeNetwork() {
-    graph.assign(devices.size(), {});
-
-    addEdge(0, 1, 4, false);
-    addEdge(0, 2, 2);
-    addEdge(1, 2, 1);
-    addEdge(1, 3, 5);
-    addEdge(2, 3, 8);
-    addEdge(3, 4, 3);
-}
-
-string networkJson() {
-    int active = 0, failed = 0;
-    ostringstream edges;
-    bool first = true;
-
-    for (size_t i = 0; i < graph.size(); ++i) {
-        for (const auto& e : graph[i]) {
-            if (int(i) >= e.to) continue;
-
-            if (e.active) ++active;
-            else ++failed;
-
-            if (!first) edges << ',';
-            first = false;
-
-            edges << "{\"from\":\"" << devices[i].id
-                  << "\",\"to\":\"" << devices[e.to].id
-                  << "\",\"delay\":" << e.delay
-                  << ",\"active\":"
-                  << (e.active ? "true" : "false") << '}';
-        }
+    for (auto& list : graph) {
+        list.clear();
     }
 
+    addEdge(0, 1, 5);
+    addEdge(0, 3, 8);
+    addEdge(1, 2, 3);
+    addEdge(1, 4, 7);
+    addEdge(2, 4, 4);
+    addEdge(3, 4, 6);
+}
+
+// ---------- NETWORK JSON ----------
+
+string networkJson() {
+    int activeConnections = 0;
+    int failedConnections = 0;
+
     ostringstream out;
+
     out << "{\"devices\":[";
 
-    for (size_t i = 0; i < devices.size(); ++i) {
-        if (i) out << ',';
+    for (int i = 0; i < N; ++i) {
+        if (i > 0) out << ",";
 
         out << "{\"id\":\"" << devices[i].id
             << "\",\"name\":\"" << devices[i].name << "\"}";
     }
 
-    out << "],\"edges\":[" << edges.str()
-        << "],\"activeConnections\":" << active
-        << ",\"failedConnections\":" << failed
+    out << "],\"nodes\":[";
+
+    for (int i = 0; i < N; ++i) {
+        if (i > 0) out << ",";
+
+        out << "{\"id\":\"" << devices[i].id
+            << "\",\"name\":\"" << devices[i].name << "\"}";
+    }
+
+    out << "],\"edges\":[";
+
+    bool first = true;
+
+    for (int a = 0; a < N; ++a) {
+        for (const auto& edge : graph[a]) {
+            // Report each undirected connection only once.
+            if (a >= edge.to) continue;
+
+            if (!first) out << ",";
+            first = false;
+
+            out << "{\"from\":\"" << devices[a].id
+                << "\",\"to\":\"" << devices[edge.to].id
+                << "\",\"delay\":" << edge.delay
+                << ",\"active\":"
+                << (edge.active ? "true" : "false") << "}";
+
+            if (edge.active) ++activeConnections;
+            else ++failedConnections;
+        }
+    }
+
+    out << "],\"totalDevices\":" << N
+        << ",\"activeConnections\":" << activeConnections
+        << ",\"failedConnections\":" << failedConnections
         << ",\"status\":\""
-        << (failed ? "Degraded" : "Healthy") << "\"}";
+        << (failedConnections > 0 ? "Degraded" : "Connected")
+        << "\"}";
 
     return out.str();
 }
 
-vector<int> bfs(int s, int t) {
-    vector<int> parent(devices.size(), -1);
-    vector<bool> seen(devices.size(), false);
+// ---------- BFS: MINIMUM HOPS ----------
+
+vector<int> bfs(int source, int target) {
+    vector<int> parent(N, -1);
+    vector<bool> visited(N, false);
     queue<int> q;
 
-    seen[s] = true;
-    q.push(s);
+    visited[source] = true;
+    q.push(source);
 
     while (!q.empty()) {
-        int u = q.front();
+        int current = q.front();
         q.pop();
 
-        if (u == t) break;
+        if (current == target) break;
 
-        for (const auto& e : graph[u]) {
-            if (e.active && !seen[e.to]) {
-                seen[e.to] = true;
-                parent[e.to] = u;
-                q.push(e.to);
+        for (const auto& edge : graph[current]) {
+            if (edge.active && !visited[edge.to]) {
+                visited[edge.to] = true;
+                parent[edge.to] = current;
+                q.push(edge.to);
             }
         }
     }
 
-    if (!seen[t]) return {};
+    if (!visited[target]) return {};
 
     vector<int> path;
-    for (int v = t; v != -1; v = parent[v])
+
+    for (int v = target; v != -1; v = parent[v]) {
         path.push_back(v);
+    }
 
     reverse(path.begin(), path.end());
     return path;
 }
 
-vector<int> dfs(int s, int t) {
-    vector<int> parent(devices.size(), -1);
-    vector<bool> seen(devices.size(), false);
-    vector<int> st = {s};
+// ---------- DFS: TRAVERSAL ----------
 
-    seen[s] = true;
+void dfsVisit(
+    int current,
+    vector<bool>& visited,
+    vector<int>& path
+) {
+    visited[current] = true;
+    path.push_back(current);
 
-    while (!st.empty()) {
-        int u = st.back();
-        st.pop_back();
+    for (const auto& edge : graph[current]) {
+        if (edge.active && !visited[edge.to]) {
+            dfsVisit(edge.to, visited, path);
+        }
+    }
+}
 
-        if (u == t) break;
+vector<int> dfs(int source, int target) {
+    vector<bool> visited(N, false);
+    vector<int> path;
 
-        for (auto it = graph[u].rbegin(); it != graph[u].rend(); ++it) {
-            if (it->active && !seen[it->to]) {
-                seen[it->to] = true;
-                parent[it->to] = u;
-                st.push_back(it->to);
+    dfsVisit(source, visited, path);
+
+    // DFS returns traversal order, including when target is unreachable.
+    return path;
+}
+
+// ---------- DIJKSTRA: MINIMUM DELAY ----------
+
+vector<int> dijkstra(int source, int target, int& totalDelay) {
+    vector<int> distance(N, INF);
+    vector<int> parent(N, -1);
+
+    priority_queue<
+        pair<int, int>,
+        vector<pair<int, int>>,
+        greater<pair<int, int>>
+    > pq;
+
+    distance[source] = 0;
+    pq.push({0, source});
+
+    while (!pq.empty()) {
+        auto [currentDistance, current] = pq.top();
+        pq.pop();
+
+        if (currentDistance != distance[current]) continue;
+
+        for (const auto& edge : graph[current]) {
+            if (!edge.active) continue;
+
+            int nextDistance = currentDistance + edge.delay;
+
+            if (nextDistance < distance[edge.to]) {
+                distance[edge.to] = nextDistance;
+                parent[edge.to] = current;
+                pq.push({nextDistance, edge.to});
             }
         }
     }
 
-    if (!seen[t]) return {};
+    if (distance[target] == INF) {
+        totalDelay = -1;
+        return {};
+    }
+
+    totalDelay = distance[target];
 
     vector<int> path;
-    for (int v = t; v != -1; v = parent[v])
+
+    for (int v = target; v != -1; v = parent[v]) {
         path.push_back(v);
+    }
 
     reverse(path.begin(), path.end());
     return path;
 }
 
-pair<vector<int>, int> dijkstra(int s, int t) {
-    const int INF = numeric_limits<int>::max() / 4;
+// ---------- ALGORITHM RESPONSE ----------
 
-    vector<int> dist(devices.size(), INF);
-    vector<int> parent(devices.size(), -1);
-
-    using P = pair<int, int>;
-    priority_queue<P, vector<P>, greater<P>> q;
-
-    dist[s] = 0;
-    q.push({0, s});
-
-    while (!q.empty()) {
-        auto [d, u] = q.top();
-        q.pop();
-
-        if (d != dist[u]) continue;
-
-        for (const auto& e : graph[u]) {
-            if (e.active && dist[e.to] > d + e.delay) {
-                dist[e.to] = d + e.delay;
-                parent[e.to] = u;
-                q.push({dist[e.to], e.to});
-            }
-        }
+string runAlgorithm(
+    const string& algorithm,
+    int source,
+    int target
+) {
+    if (source < 0 || source >= N ||
+        target < 0 || target >= N) {
+        return "{\"found\":false,\"error\":\"Invalid source or target\"}";
     }
 
-    if (dist[t] == INF) return {{}, -1};
-
-    vector<int> path;
-    for (int v = t; v != -1; v = parent[v])
-        path.push_back(v);
-
-    reverse(path.begin(), path.end());
-    return {path, dist[t]};
-}
-
-string pathJson(const vector<int>& path) {
-    ostringstream out;
-    out << '[';
-
-    for (size_t i = 0; i < path.size(); ++i) {
-        if (i) out << ',';
-        out << '"' << devices[path[i]].id << '"';
-    }
-
-    out << ']';
-    return out.str();
-}
-
-string runAlgorithm(const string& algorithm, int s, int t) {
-    if (s < 0 || t < 0)
-        return "{\"error\":\"Invalid source or target\"}";
-
-    vector<int> path;
-    int delay = -1;
     string name = algorithm;
+    transform(name.begin(), name.end(), name.begin(),
+        [](unsigned char c) { return static_cast<char>(tolower(c)); });
 
-    if (algorithm == "BFS" || algorithm == "bfs") {
-        path = bfs(s, t);
-        name = "BFS";
-    } else if (algorithm == "DFS" || algorithm == "dfs") {
-        path = dfs(s, t);
-        name = "DFS";
-    } else if (algorithm == "Dijkstra" ||
-               algorithm == "DIJKSTRA" ||
-               algorithm == "dijkstra") {
-        auto result = dijkstra(s, t);
-        path = result.first;
-        delay = result.second;
-        name = "Dijkstra";
+    vector<int> path;
+    int totalDelay = -1;
+
+    if (name == "bfs") {
+        path = bfs(source, target);
+    } else if (name == "dfs") {
+        path = dfs(source, target);
+    } else if (name == "dijkstra") {
+        path = dijkstra(source, target, totalDelay);
     } else {
-        return "{\"error\":\"Unknown algorithm\"}";
+        return "{\"found\":false,\"error\":\"Unknown algorithm\"}";
     }
 
     if (path.empty()) {
-        return "{\"algorithm\":\"" + name +
-               "\",\"found\":false,\"path\":[],"
-               "\"message\":\"No active path found\"}";
+        return "{\"found\":false,\"message\":\"No route available.\"}";
     }
 
-    if (delay < 0) {
-        delay = 0;
+    ostringstream out;
 
-        for (size_t i = 1; i < path.size(); ++i) {
-            for (const auto& e : graph[path[i - 1]]) {
-                if (e.to == path[i] && e.active) {
-                    delay += e.delay;
-                    break;
-                }
-            }
-        }
+    out << "{\"found\":true,\"algorithm\":\"" << name << "\",\"path\":[";
+
+    for (size_t i = 0; i < path.size(); ++i) {
+        if (i > 0) out << ",";
+        out << "\"" << deviceId(path[i]) << "\"";
     }
 
-    return "{\"algorithm\":\"" + name +
-           "\",\"found\":true,\"path\":" + pathJson(path) +
-           ",\"totalDelay\":" + to_string(delay) + "}";
+    out << "],\"hops\":" << static_cast<int>(path.size()) - 1
+        << ",\"totalDelay\":" << totalDelay << "}";
+
+    return out.str();
 }
 
-string dsaReportJson() {
-    return "{\"note\":\"Live recovery uses graph algorithms; "
-           "supplementary DSA examples are separate.\","
-           "\"algorithms\":[\"BFS\",\"DFS\",\"Dijkstra\"],"
-           "\"graphRepresentation\":\"Adjacency list\"}";
-}
+// ---------- MAIN SERVER ----------
 
 int main() {
     initializeNetwork();
 
+    Server server;
+
+    // Serve frontend files.
+    server.set_mount_point("/", "./public");
+
     server.Get("/api/health",
-        [](const httplib::Request&, httplib::Response& res) {
-            res.set_content("{\"status\":\"ok\"}", "application/json");
+        [](const Request&, Response& res) {
+            res.set_content(
+                "{\"status\":\"ok\"}",
+                "application/json"
+            );
         }
     );
 
     server.Get("/api/network",
-        [](const httplib::Request&, httplib::Response& res) {
+        [](const Request&, Response& res) {
             res.set_content(networkJson(), "application/json");
         }
     );
 
-    server.Get("/api/dsa/report",
-        [](const httplib::Request&, httplib::Response& res) {
-            res.set_content(dsaReportJson(), "application/json");
-        }
-    );
-
     server.Post("/api/connection/add",
-        [](const httplib::Request& req, httplib::Response& res) {
+        [](const Request& req, Response& res) {
             int a = deviceIndex(getValue(req.body, "from"));
             int b = deviceIndex(getValue(req.body, "to"));
-            string dt = getValue(req.body, "delay");
 
-            if (a < 0 || b < 0 || a == b || dt.empty()) {
-                res.status = 400;
-                res.set_content(
-                    "{\"error\":\"Invalid devices or delay\"}",
-                    "application/json"
-                );
-                return;
-            }
+            string delayText = getValue(req.body, "delay");
+            int delay = 0;
 
-            int delay;
             try {
                 size_t used = 0;
-                delay = stoi(dt, &used);
-                if (used != dt.size()) throw invalid_argument("delay");
+                delay = stoi(delayText, &used);
+
+                if (used != delayText.size()) {
+                    throw invalid_argument("invalid delay");
+                }
             } catch (...) {
                 res.status = 400;
                 res.set_content(
-                    "{\"error\":\"Delay must be a positive integer\"}",
+                    "{\"error\":\"Invalid connection delay\"}",
                     "application/json"
                 );
                 return;
             }
 
-            if (delay <= 0 || delay > 1000000) {
+            if (a < 0 || b < 0 || a == b || delay <= 0) {
                 res.status = 400;
                 res.set_content(
-                    "{\"error\":\"Invalid delay\"}",
+                    "{\"error\":\"Invalid devices or delay\"}",
                     "application/json"
                 );
                 return;
@@ -401,9 +516,18 @@ int main() {
     );
 
     server.Post("/api/connection/fail",
-        [](const httplib::Request& req, httplib::Response& res) {
+        [](const Request& req, Response& res) {
             int a = deviceIndex(getValue(req.body, "from"));
             int b = deviceIndex(getValue(req.body, "to"));
+
+            if (a < 0 || b < 0 || a == b) {
+                res.status = 400;
+                res.set_content(
+                    "{\"error\":\"Invalid devices\"}",
+                    "application/json"
+                );
+                return;
+            }
 
             if (!setEdgeState(a, b, false)) {
                 res.status = 404;
@@ -419,14 +543,24 @@ int main() {
     );
 
     server.Post("/api/connection/restore",
-        [](const httplib::Request& req, httplib::Response& res) {
+        [](const Request& req, Response& res) {
             int a = deviceIndex(getValue(req.body, "from"));
             int b = deviceIndex(getValue(req.body, "to"));
 
+            if (a < 0 || b < 0 || a == b) {
+                res.status = 400;
+                res.set_content(
+                    "{\"error\":\"Invalid devices\"}",
+                    "application/json"
+                );
+                return;
+            }
+
+            // Restore an existing connection, even if it is failed.
             if (!setEdgeState(a, b, true)) {
                 res.status = 404;
                 res.set_content(
-                    "{\"error\":\"Connection not found\"}",
+                    "{\"error\":\"Connection not found. Add it first.\"}",
                     "application/json"
                 );
                 return;
@@ -437,44 +571,40 @@ int main() {
     );
 
     server.Post("/api/algorithm",
-        [](const httplib::Request& req, httplib::Response& res) {
+        [](const Request& req, Response& res) {
             string algorithm = getValue(req.body, "algorithm");
             int source = deviceIndex(getValue(req.body, "source"));
             int target = deviceIndex(getValue(req.body, "target"));
 
             string result = runAlgorithm(algorithm, source, target);
 
-            if (result.find("\"error\"") != string::npos)
+            if (result.find("\"error\"") != string::npos) {
                 res.status = 400;
+            }
 
             res.set_content(result, "application/json");
         }
     );
 
     server.Post("/api/reset",
-        [](const httplib::Request&, httplib::Response& res) {
+        [](const Request&, Response& res) {
             initializeNetwork();
             res.set_content(networkJson(), "application/json");
         }
     );
 
-    server.set_mount_point("/", "./public");
+    const char* portText = getenv("PORT");
+    int port = portText ? atoi(portText) : 8080;
 
-    int port = 10000;
-
-    if (const char* p = getenv("PORT")) {
-        try {
-            port = stoi(p);
-        } catch (...) {
-            port = 10000;
-        }
+    if (port <= 0 || port > 65535) {
+        port = 8080;
     }
 
-    cout << "Network Recovery Simulator starting on port "
-         << port << "...\n";
+    cout << "Network Recovery Simulator running on port "
+         << port << endl;
 
     if (!server.listen("0.0.0.0", port)) {
-        cerr << "Server failed to start.\n";
+        cerr << "Failed to start server on port " << port << endl;
         return 1;
     }
 
