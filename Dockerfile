@@ -11,4 +11,4 @@ RUN g++ -std=c++17 -O2 -I include server.cpp -o server -pthread
 
 EXPOSE 10000
 
-CMD ["sh", "-c", "./server"]
+CMD ["./server"]
