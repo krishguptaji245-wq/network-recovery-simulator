@@ -3,7 +3,7 @@ const svg = document.getElementById("networkGraph");
 const $ = id => document.getElementById(id);
 
 let edges = [];
-let devices = [1, 2, 3, 4, 5];
+let devices = [];
 let route = [];
 
 const positions = {
@@ -15,13 +15,21 @@ const positions = {
 };
 
 function log(message) {
+    const logElement = $("activityLog");
+    if (!logElement) return;
+
     const li = document.createElement("li");
-    li.textContent = new Date().toLocaleTimeString() + " — " + message;
-    $("activityLog").prepend(li);
+    li.textContent =
+        new Date().toLocaleTimeString() + " — " + message;
+
+    logElement.prepend(li);
 }
 
 async function api(url, method = "GET", data = null) {
-    const options = { method, headers: {} };
+    const options = {
+        method,
+        headers: {}
+    };
 
     if (data !== null) {
         options.headers["Content-Type"] = "application/json";
@@ -29,28 +37,46 @@ async function api(url, method = "GET", data = null) {
     }
 
     const response = await fetch(url, options);
-    const result = await response.json();
+    const text = await response.text();
+
+    let result;
+
+    try {
+        result = text ? JSON.parse(text) : {};
+    } catch {
+        throw new Error("Server returned an invalid response.");
+    }
 
     if (!response.ok) {
-        throw new Error(result.error || "API request failed");
+        throw new Error(result.error || "API request failed: " + response.status);
     }
 
     return result;
 }
 
 function showError(error) {
-    $("result").textContent = "Error: " + error.message;
+    if ($("result")) {
+        $("result").textContent = "Error: " + error.message;
+    }
+
     log("API error: " + error.message);
 }
 
+// FIX: Backend returns data.devices, not data.nodes.
 function syncNetwork(data) {
-    devices = data.nodes.map(node => Number(node.id.slice(1)));
+    if (!Array.isArray(data.devices) || !Array.isArray(data.edges)) {
+        throw new Error("Unexpected network API response format.");
+    }
+
+    devices = data.devices.map(device =>
+        Number(String(device.id).replace("D", ""))
+    );
 
     edges = data.edges.map(edge => ({
-        a: Number(edge.from.slice(1)),
-        b: Number(edge.to.slice(1)),
-        delay: edge.delay,
-        active: edge.active
+        a: Number(String(edge.from).replace("D", "")),
+        b: Number(String(edge.to).replace("D", "")),
+        delay: Number(edge.delay),
+        active: Boolean(edge.active)
     }));
 
     populateDevices();
@@ -68,37 +94,99 @@ async function loadNetwork() {
     }
 }
 
-function getEdge(a, b) {
-    return edges.find(e =>
-        (e.a === a && e.b === b) ||
-        (e.a === b && e.b === a)
-    );
+function populateDevices() {
+    ["deviceA", "deviceB"].forEach(id => {
+        const select = $(id);
+        if (!select) return;
+
+        const previous = Number(select.value);
+        select.replaceChildren();
+
+        devices.forEach(device => {
+            const option = document.createElement("option");
+            option.value = device;
+            option.textContent = "Device " + device;
+            select.appendChild(option);
+        });
+
+        if (devices.includes(previous)) {
+            select.value = String(previous);
+        }
+    });
+
+    const deviceA = $("deviceA");
+    const deviceB = $("deviceB");
+
+    if (
+        deviceA &&
+        deviceB &&
+        devices.length > 1 &&
+        deviceA.value === deviceB.value
+    ) {
+        deviceB.value = String(
+            devices.find(device => String(device) !== deviceA.value)
+        );
+    }
+}
+
+function updateStats(data) {
+    if ($("deviceCount")) {
+        $("deviceCount").textContent = devices.length;
+    }
+
+    if ($("connectionCount")) {
+        $("connectionCount").textContent =
+            data.activeConnections ?? edges.filter(e => e.active).length;
+    }
+
+    if ($("failedCount")) {
+        $("failedCount").textContent =
+            data.failedConnections ?? edges.filter(e => !e.active).length;
+    }
+
+    if ($("networkStatus")) {
+        $("networkStatus").textContent = data.status || "Unknown";
+        $("networkStatus").style.color =
+            (data.failedConnections ?? 0) > 0
+                ? "#ff647c"
+                : "#35d49a";
+    }
 }
 
 function renderGraph() {
+    if (!svg) return;
+
     svg.replaceChildren();
+
     const ns = "http://www.w3.org/2000/svg";
 
     function element(tag, attrs = {}) {
         const el = document.createElementNS(ns, tag);
-        Object.entries(attrs).forEach(([key, value]) =>
-            el.setAttribute(key, value)
-        );
+
+        Object.entries(attrs).forEach(([key, value]) => {
+            el.setAttribute(key, value);
+        });
+
         svg.appendChild(el);
         return el;
     }
 
-    edges.forEach(e => {
-        const [x1, y1] = positions[e.a];
-        const [x2, y2] = positions[e.b];
+    edges.forEach(edge => {
+        const p1 = positions[edge.a];
+        const p2 = positions[edge.b];
 
-        let color = e.active ? "#35d49a" : "#ff647c";
+        if (!p1 || !p2) return;
+
+        const [x1, y1] = p1;
+        const [x2, y2] = p2;
+
+        let color = edge.active ? "#35d49a" : "#ff647c";
         let width = 2;
 
         for (let i = 0; i < route.length - 1; i++) {
             if (
-                (route[i] === e.a && route[i + 1] === e.b) ||
-                (route[i] === e.b && route[i + 1] === e.a)
+                (route[i] === edge.a && route[i + 1] === edge.b) ||
+                (route[i] === edge.b && route[i + 1] === edge.a)
             ) {
                 color = "#ffd166";
                 width = 4;
@@ -109,7 +197,7 @@ function renderGraph() {
             x1, y1, x2, y2,
             stroke: color,
             "stroke-width": width,
-            "stroke-dasharray": e.active ? "none" : "7 6"
+            "stroke-dasharray": edge.active ? "none" : "7 6"
         });
 
         const label = element("text", {
@@ -119,66 +207,47 @@ function renderGraph() {
             "font-size": 12,
             "text-anchor": "middle"
         });
-        label.textContent = e.delay + "ms";
+
+        label.textContent = edge.delay + "ms";
     });
 
-    devices.forEach(v => {
-        const [x, y] = positions[v];
+    devices.forEach(device => {
+        const point = positions[device];
+        if (!point) return;
+
+        const [x, y] = point;
+        const onRoute = route.includes(device);
 
         element("circle", {
-            cx: x, cy: y, r: 25,
-            fill: route.includes(v) ? "#765b22" : "#173866",
-            stroke: route.includes(v) ? "#ffd166" : "#5795ff",
+            cx: x,
+            cy: y,
+            r: 25,
+            fill: onRoute ? "#765b22" : "#173866",
+            stroke: onRoute ? "#ffd166" : "#5795ff",
             "stroke-width": 2
         });
 
         const label = element("text", {
-            x, y: y + 5,
+            x,
+            y: y + 5,
             fill: "#ffffff",
             "font-size": 13,
             "font-weight": 700,
             "text-anchor": "middle"
         });
-        label.textContent = "D" + v;
+
+        label.textContent = "D" + device;
     });
-}
-
-function updateStats(data) {
-    $("deviceCount").textContent = data.totalDevices;
-    $("connectionCount").textContent = data.activeConnections;
-    $("failedCount").textContent = data.failedConnections;
-
-    $("networkStatus").textContent = data.status;
-    $("networkStatus").style.color =
-        data.failedConnections ? "#ff647c" : "#35d49a";
-}
-
-function populateDevices() {
-    ["deviceA", "deviceB"].forEach(id => {
-        const select = $(id);
-        const previous = Number(select.value);
-
-        select.replaceChildren();
-
-        devices.forEach(v => {
-            const option = document.createElement("option");
-            option.value = v;
-            option.textContent = "Device " + v;
-            select.appendChild(option);
-        });
-
-        if (devices.includes(previous)) select.value = previous;
-    });
-
-    if (devices.length > 1 &&
-        $("deviceA").value === $("deviceB").value) {
-        $("deviceB").selectedIndex = 1;
-    }
 }
 
 function getSelected() {
-    const a = Number($("deviceA").value);
-    const b = Number($("deviceB").value);
+    const a = Number($("deviceA")?.value);
+    const b = Number($("deviceB")?.value);
+
+    if (!devices.includes(a) || !devices.includes(b)) {
+        $("result").textContent = "Please select two devices.";
+        return null;
+    }
 
     if (a === b) {
         $("result").textContent =
@@ -189,27 +258,26 @@ function getSelected() {
     return [a, b];
 }
 
-function deviceName(n) {
-    return "D" + n;
+function deviceName(device) {
+    return "D" + device;
 }
 
 async function refreshAfterChange(message) {
     const data = await api("/api/network");
-    syncNetwork(data);
+
     route = [];
-    renderGraph();
+    syncNetwork(data);
     log(message);
 }
 
-$("addBtn").addEventListener("click", async () => {
+async function addConnection() {
     const selected = getSelected();
     if (!selected) return;
 
     const [a, b] = selected;
     const delay = Number($("delay").value);
 
-    if (!Number.isFinite(delay) || delay <= 0 ||
-        !Number.isInteger(delay)) {
+    if (!Number.isInteger(delay) || delay <= 0) {
         $("result").textContent =
             "Enter a positive whole-number delay.";
         return;
@@ -225,14 +293,15 @@ $("addBtn").addEventListener("click", async () => {
         await refreshAfterChange(
             "Connection added/updated: " + a + " ↔ " + b
         );
+
         $("result").textContent =
-            "Connection updated in C++ backend.";
+            "Connection updated successfully.";
     } catch (error) {
         showError(error);
     }
-});
+}
 
-$("failBtn").addEventListener("click", async () => {
+async function failConnection() {
     const selected = getSelected();
     if (!selected) return;
 
@@ -244,15 +313,17 @@ $("failBtn").addEventListener("click", async () => {
             to: deviceName(b)
         });
 
-        await refreshAfterChange("Connection failed: " + a + " ↔ " + b);
-        $("result").textContent =
-            "Connection failed in C++ backend.";
+        await refreshAfterChange(
+            "Connection failed: " + a + " ↔ " + b
+        );
+
+        $("result").textContent = "Connection failed successfully.";
     } catch (error) {
         showError(error);
     }
-});
+}
 
-$("restoreBtn").addEventListener("click", async () => {
+async function restoreConnection() {
     const selected = getSelected();
     if (!selected) return;
 
@@ -267,12 +338,12 @@ $("restoreBtn").addEventListener("click", async () => {
         await refreshAfterChange(
             "Connection restored: " + a + " ↔ " + b
         );
-        $("result").textContent =
-            "Connection restored in C++ backend.";
+
+        $("result").textContent = "Connection restored successfully.";
     } catch (error) {
         showError(error);
     }
-});
+}
 
 async function runAlgorithm() {
     const selected = getSelected();
@@ -283,33 +354,40 @@ async function runAlgorithm() {
 
     try {
         if (algorithm === "dfs") {
-            // DFS remains in JavaScript for now.
             const adjacency = {};
-            devices.forEach(v => adjacency[v] = []);
 
-            edges.filter(e => e.active).forEach(e => {
-                adjacency[e.a].push(e.b);
-                adjacency[e.b].push(e.a);
+            devices.forEach(device => {
+                adjacency[device] = [];
+            });
+
+            edges.filter(edge => edge.active).forEach(edge => {
+                adjacency[edge.a].push(edge.b);
+                adjacency[edge.b].push(edge.a);
             });
 
             const visited = new Set();
             const order = [];
 
-            function visit(v) {
-                visited.add(v);
-                order.push(v);
-                adjacency[v].forEach(next => {
-                    if (!visited.has(next)) visit(next);
+            function visit(device) {
+                visited.add(device);
+                order.push(device);
+
+                adjacency[device].forEach(next => {
+                    if (!visited.has(next)) {
+                        visit(next);
+                    }
                 });
             }
 
             visit(a);
+
             route = order;
+            renderGraph();
+
             $("result").textContent =
                 "DFS traversal from Device " + a + ": " +
                 order.map(deviceName).join(" → ");
 
-            renderGraph();
             log("DFS executed from Device " + a);
             return;
         }
@@ -325,41 +403,47 @@ async function runAlgorithm() {
             $("result").textContent =
                 result.message || "No route available.";
         } else {
-            route = result.path.map(name => Number(name.slice(1)));
+            route = result.path.map(name =>
+                Number(String(name).replace("D", ""))
+            );
 
             if (algorithm === "bfs") {
                 $("result").textContent =
-                    "C++ BFS minimum-hop route: " +
+                    "BFS minimum-hop route: " +
                     result.path.join(" → ") +
                     " | Hops: " + result.hops;
             } else {
                 $("result").textContent =
-                    "C++ Dijkstra minimum-delay route: " +
+                    "Dijkstra minimum-delay route: " +
                     result.path.join(" → ") +
                     " | Total delay: " + result.totalDelay + " ms";
             }
         }
 
         renderGraph();
-        log(algorithm.toUpperCase() + " executed by C++ backend.");
+        log(algorithm.toUpperCase() + " executed.");
     } catch (error) {
         showError(error);
     }
 }
 
-$("runBtn").addEventListener("click", runAlgorithm);
-
-$("resetBtn").addEventListener("click", async () => {
+async function resetNetwork() {
     try {
         await api("/api/reset", "POST");
-        await loadNetwork();
         route = [];
-        renderGraph();
-        log("Network reset by C++ backend.");
+        await loadNetwork();
+
         $("result").textContent = "Default network restored.";
+        log("Network reset by C++ backend.");
     } catch (error) {
         showError(error);
     }
-});
+}
+
+$("addBtn")?.addEventListener("click", addConnection);
+$("failBtn")?.addEventListener("click", failConnection);
+$("restoreBtn")?.addEventListener("click", restoreConnection);
+$("runBtn")?.addEventListener("click", runAlgorithm);
+$("resetBtn")?.addEventListener("click", resetNetwork);
 
 loadNetwork();
